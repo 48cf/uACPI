@@ -80,14 +80,14 @@ static uacpi_object *make_object_for_predefined(
         if (uacpi_unlikely(obj == UACPI_NULL))
             return obj;
 
-        obj->buffer->text = uacpi_kernel_alloc(sizeof(UACPI_OS_VALUE));
-        if (uacpi_unlikely(obj->buffer->text == UACPI_NULL)) {
+        obj->buffer->data.text = uacpi_kernel_alloc(sizeof(UACPI_OS_VALUE));
+        if (uacpi_unlikely(obj->buffer->data.text == UACPI_NULL)) {
             uacpi_object_unref(obj);
             return UACPI_NULL;
         }
 
-        obj->buffer->size = sizeof(UACPI_OS_VALUE);
-        uacpi_memcpy(obj->buffer->text, UACPI_OS_VALUE, obj->buffer->size);
+        obj->buffer->data.size = sizeof(UACPI_OS_VALUE);
+        uacpi_memcpy(obj->buffer->data.text, UACPI_OS_VALUE, obj->buffer->data.size);
         break;
 
     case UACPI_PREDEFINED_NAMESPACE_REV:

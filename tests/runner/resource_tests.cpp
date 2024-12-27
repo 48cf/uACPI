@@ -2163,8 +2163,16 @@ void run_resource_tests()
         uacpi_status ret;
         uacpi_object *resource_template = nullptr;
 
-        aml_buffer.data = test.aml_bytes.data();
-        aml_buffer.size = test.aml_bytes.size();
+        if (test.aml_bytes.size() <= UACPI_INLINE_DATA_MAX_SIZE) {
+            aml_buffer.inline_data.size = test.aml_bytes.size();
+            aml_buffer.inline_data.is_inline = UACPI_TRUE;
+
+            std::copy(test.aml_bytes.begin(), test.aml_bytes.end(),
+                      aml_buffer.inline_data.data);
+        } else {
+            aml_buffer.data.data = test.aml_bytes.data();
+            aml_buffer.data.size = test.aml_bytes.size();
+        }
 
         ret = uacpi_native_resources_from_aml(&aml_buffer, &resources);
         if (uacpi_unlikely_error(ret)) {
@@ -2196,6 +2204,9 @@ void run_resource_tests()
             }
         }
 
+        uacpi_size template_buf_size;
+        uacpi_u8 *template_buf;
+
         ret = uacpi_native_resources_to_aml(resources, &resource_template);
         if (uacpi_unlikely_error(ret)) {
             std::printf("to_aml error: %s\n", uacpi_status_to_string(ret));
@@ -2203,18 +2214,19 @@ void run_resource_tests()
             goto next_test;
         }
 
-        if (resource_template->buffer->size != test.aml_bytes.size()) {
+        template_buf_size = UACPI_BUFFER_SIZE(resource_template->buffer);
+        template_buf = UACPI_BUFFER_BYTE_DATA(resource_template->buffer);
+        if (template_buf_size != test.aml_bytes.size()) {
             std::printf("unexpected AML length %zu (expected %zu)\n",
-                        resource_template->buffer->size, test.aml_bytes.size());
+                        template_buf_size, test.aml_bytes.size());
             fail_count++;
             goto next_test;
         }
 
-        for (size_t i = 0; i < resource_template->buffer->size; ++i) {
-            if (resource_template->buffer->byte_data[i] != test.aml_bytes[i]) {
+        for (size_t i = 0; i < template_buf_size; ++i) {
+            if (template_buf[i] != test.aml_bytes[i]) {
                 std::printf("AML byte[%zu] mismatch, expected 0x%02X, "
-                            "got 0x%02X\n", i, test.aml_bytes[i],
-                            resource_template->buffer->byte_data[i]);
+                            "got 0x%02X\n", i, test.aml_bytes[i], template_buf[i]);
                 fail_count++;
                 goto next_test;
             }

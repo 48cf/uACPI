@@ -721,12 +721,19 @@ static uacpi_status handle_buffer(struct execution_context *ctx)
     }
 
     dst = item_array_at(&op_ctx->items, 3)->obj;
-    dst->buffer->data = uacpi_kernel_alloc(buffer_size);
-    if (uacpi_unlikely(dst->buffer->data == UACPI_NULL))
-        return UACPI_STATUS_OUT_OF_MEMORY;
-    dst->buffer->size = buffer_size;
 
-    uacpi_memcpy_zerout(dst->buffer->data, src, buffer_size, init_size);
+    if (uacpi_likely(buffer_size <= UACPI_INLINE_DATA_MAX_SIZE)) {
+        dst->buffer->inline_data.size = buffer_size;
+        dst->buffer->inline_data.is_inline = UACPI_TRUE;
+    } else {
+        dst->buffer->data.data = uacpi_kernel_alloc(buffer_size);
+        if (uacpi_unlikely(dst->buffer->data.data == UACPI_NULL))
+            return UACPI_STATUS_OUT_OF_MEMORY;
+
+        dst->buffer->data.size = buffer_size;
+    }
+
+    uacpi_memcpy_zerout(UACPI_BUFFER_DATA(dst->buffer), src, buffer_size, init_size);
     return UACPI_STATUS_OK;
 }
 
@@ -748,12 +755,18 @@ static uacpi_status handle_string(struct execution_context *ctx)
     if (uacpi_unlikely((length == max_bytes) || (string[length++] != 0x00)))
         return UACPI_STATUS_AML_BAD_ENCODING;
 
-    obj->buffer->text = uacpi_kernel_alloc(length);
-    if (uacpi_unlikely(obj->buffer->text == UACPI_NULL))
-        return UACPI_STATUS_OUT_OF_MEMORY;
+    if (uacpi_likely(length <= UACPI_INLINE_DATA_MAX_SIZE)) {
+        obj->buffer->inline_data.size = length;
+        obj->buffer->inline_data.is_inline = UACPI_TRUE;
+    } else {
+        obj->buffer->data.text = uacpi_kernel_alloc(length);
+        if (uacpi_unlikely(obj->buffer->data.text == UACPI_NULL))
+            return UACPI_STATUS_OUT_OF_MEMORY;
 
-    uacpi_memcpy(obj->buffer->text, string, length);
-    obj->buffer->size = length;
+        obj->buffer->data.size = length;
+    }
+
+    uacpi_memcpy(UACPI_BUFFER_TEXT(obj->buffer), string, length);
     frame->code_offset += length;
     return UACPI_STATUS_OK;
 }
@@ -851,8 +864,8 @@ static uacpi_status handle_package(struct execution_context *ctx)
                 return ret;
 
             obj->flags = UACPI_STRING_KIND_PATH;
-            obj->buffer->text = path;
-            obj->buffer->size = length;
+            obj->buffer->data.text = path;
+            obj->buffer->data.size = length;
 
             item->obj = obj;
             item->type = ITEM_OBJECT;
@@ -899,21 +912,21 @@ static uacpi_status get_object_storage(uacpi_object *obj,
         out_buf->ptr = &obj->integer;
         break;
     case UACPI_OBJECT_STRING:
-        out_buf->len = obj->buffer->size;
+        out_buf->len = UACPI_BUFFER_SIZE(obj->buffer);
         if (out_buf->len && !include_null)
             out_buf->len--;
 
-        out_buf->ptr = obj->buffer->text;
+        out_buf->ptr = UACPI_BUFFER_TEXT(obj->buffer);
         break;
     case UACPI_OBJECT_BUFFER:
-        if (obj->buffer->size == 0) {
+        if (UACPI_BUFFER_SIZE(obj->buffer) == 0) {
             out_buf->ptr = UACPI_NULL;
             out_buf->len = 0;
             break;
         }
 
-        out_buf->len = obj->buffer->size;
-        out_buf->ptr = obj->buffer->data;
+        out_buf->len = UACPI_BUFFER_SIZE(obj->buffer);
+        out_buf->ptr = UACPI_BUFFER_DATA(obj->buffer);
         break;
     case UACPI_OBJECT_REFERENCE:
         return UACPI_STATUS_INVALID_ARGUMENT;
@@ -928,7 +941,7 @@ static uacpi_u8 *buffer_index_cursor(uacpi_buffer_index *buf_idx)
 {
     uacpi_u8 *out_cursor;
 
-    out_cursor = buf_idx->buffer->data;
+    out_cursor = UACPI_BUFFER_DATA(buf_idx->buffer);
     out_cursor += buf_idx->idx;
 
     return out_cursor;
@@ -1133,7 +1146,7 @@ static uacpi_status table_id_error(
     uacpi_buffer *str
 )
 {
-    uacpi_error("%s: invalid %s '%s'\n", opcode, arg, str->text);
+    uacpi_error("%s: invalid %s '%s'\n", opcode, arg, UACPI_BUFFER_TEXT(str));
     return UACPI_STATUS_AML_BAD_ENCODING;
 }
 
@@ -1157,27 +1170,31 @@ static uacpi_status build_table_id(
     uacpi_buffer *oem_table_id
 )
 {
-    if (uacpi_unlikely(signature->size != (sizeof(uacpi_object_name) + 1)))
+    if (uacpi_unlikely(UACPI_BUFFER_SIZE(signature) != (sizeof(uacpi_object_name) + 1)))
         return table_id_error(opcode, "SignatureString", signature);
 
-    uacpi_memcpy(out_id->signature.text, signature->text,
+    uacpi_memcpy(out_id->signature.text, UACPI_BUFFER_TEXT(signature),
                  sizeof(uacpi_object_name));
 
-    if (uacpi_unlikely(oem_id->size > (sizeof(out_id->oemid) + 1)))
+    uacpi_size oem_id_size = UACPI_BUFFER_SIZE(oem_id);
+
+    if (uacpi_unlikely(oem_id_size > (sizeof(out_id->oemid) + 1)))
         return table_id_error(opcode, "OemIDString", oem_id);
 
     uacpi_memcpy_zerout(
-        out_id->oemid, oem_id->text,
-        sizeof(out_id->oemid), oem_id->size ? oem_id->size  - 1 : 0
+        out_id->oemid, UACPI_BUFFER_TEXT(oem_id),
+        sizeof(out_id->oemid), oem_id_size ? oem_id_size  - 1 : 0
     );
 
-    if (uacpi_unlikely(oem_table_id->size > (sizeof(out_id->oem_table_id) + 1)))
+    if (uacpi_unlikely(UACPI_BUFFER_SIZE(oem_table_id) > (sizeof(out_id->oem_table_id) + 1)))
         return table_id_error(opcode, "OemTableIDString", oem_table_id);
 
+    uacpi_size oem_table_id_size = UACPI_BUFFER_SIZE(oem_table_id);
+
     uacpi_memcpy_zerout(
-        out_id->oem_table_id, oem_table_id->text,
+        out_id->oem_table_id, UACPI_BUFFER_TEXT(oem_table_id),
         sizeof(out_id->oem_table_id),
-        oem_table_id->size ? oem_table_id->size - 1 : 0
+        oem_table_id_size ? oem_table_id_size - 1 : 0
     );
 
     return UACPI_STATUS_OK;
@@ -1332,9 +1349,9 @@ static uacpi_status handle_load_table(struct execution_context *ctx)
     param_path = item_array_at(items, 9)->obj->buffer;
     root_node_item = item_array_at(items, 0);
 
-    if (root_path->size > 1) {
+    if (UACPI_BUFFER_SIZE(root_path) > 1) {
         ret = uacpi_namespace_node_resolve(
-            ctx->cur_frame->cur_scope, root_path->text, UACPI_SHOULD_LOCK_NO,
+            ctx->cur_frame->cur_scope, UACPI_BUFFER_TEXT(root_path), UACPI_SHOULD_LOCK_NO,
             UACPI_MAY_SEARCH_ABOVE_PARENT_YES, UACPI_PERMANENT_ONLY_NO,
             &root_node
         );
@@ -1352,11 +1369,11 @@ static uacpi_status handle_load_table(struct execution_context *ctx)
     root_node_item->type = ITEM_NAMESPACE_NODE;
     uacpi_shareable_ref(root_node);
 
-    if (param_path->size > 1) {
+    if (UACPI_BUFFER_SIZE(param_path) > 1) {
         struct item *param_item;
 
         ret = uacpi_namespace_node_resolve(
-            root_node, param_path->text, UACPI_SHOULD_LOCK_NO,
+            root_node, UACPI_BUFFER_TEXT(param_path), UACPI_SHOULD_LOCK_NO,
             UACPI_MAY_SEARCH_ABOVE_PARENT_YES, UACPI_PERMANENT_ONLY_NO,
             &param_node
         );
@@ -1453,16 +1470,16 @@ static uacpi_status handle_load(struct execution_context *ctx)
         uacpi_buffer *buffer;
 
         buffer = src->buffer;
-        if (buffer->size < sizeof(struct acpi_sdt_hdr)) {
+        if (UACPI_BUFFER_SIZE(buffer) < sizeof(struct acpi_sdt_hdr)) {
             uacpi_error(
                 "Load: buffer is too small: %zu\n",
-                buffer->size
+                UACPI_BUFFER_SIZE(buffer)
             );
             goto error_out;
         }
 
-        src_table = buffer->data;
-        declared_size = buffer->size;
+        src_table = UACPI_BUFFER_DATA(buffer);
+        declared_size = UACPI_BUFFER_SIZE(buffer);
         break;
     }
 
@@ -2042,7 +2059,7 @@ static void debug_store_no_recurse(const uacpi_char *prefix, uacpi_object *src)
         uacpi_trace("%s Uninitialized\n", prefix);
         break;
     case UACPI_OBJECT_STRING:
-        uacpi_trace("%s String => \"%s\"\n", prefix, src->buffer->text);
+        uacpi_trace("%s String => \"%s\"\n", prefix, UACPI_BUFFER_TEXT(src->buffer));
         break;
     case UACPI_OBJECT_INTEGER:
         if (g_uacpi_rt_ctx.is_rev1) {
@@ -2068,7 +2085,7 @@ static void debug_store_no_recurse(const uacpi_char *prefix, uacpi_object *src)
     case UACPI_OBJECT_BUFFER:
         uacpi_trace(
             "%s Buffer @%p (%p) (%zu bytes)\n",
-            prefix, src, src->buffer, src->buffer->size
+            prefix, src, src->buffer, UACPI_BUFFER_SIZE(src->buffer)
         );
         break;
     case UACPI_OBJECT_OPERATION_REGION:
@@ -2096,7 +2113,7 @@ static void debug_store_no_recurse(const uacpi_char *prefix, uacpi_object *src)
     case UACPI_OBJECT_BUFFER_INDEX:
         uacpi_trace(
             "%s Buffer Index %p[%zu] => 0x%02X\n",
-            prefix, src->buffer_index.buffer->data, src->buffer_index.idx,
+            prefix, UACPI_BUFFER_DATA(src->buffer_index.buffer), src->buffer_index.idx,
             *buffer_index_cursor(&src->buffer_index)
         );
         break;
@@ -2615,13 +2632,14 @@ static uacpi_u64 object_to_integer(const uacpi_object *obj,
         break;
     case UACPI_OBJECT_BUFFER: {
         uacpi_size bytes;
-        bytes = UACPI_MIN(max_buffer_bytes, obj->buffer->size);
-        uacpi_memcpy_zerout(&dst, obj->buffer->data, sizeof(dst), bytes);
+        bytes = UACPI_MIN(max_buffer_bytes, UACPI_BUFFER_SIZE(obj->buffer));
+        uacpi_memcpy_zerout(&dst, UACPI_BUFFER_DATA(obj->buffer), sizeof(dst), bytes);
         break;
     }
     case UACPI_OBJECT_STRING:
         uacpi_string_to_integer(
-            obj->buffer->text, obj->buffer->size, UACPI_BASE_AUTO, &dst
+            UACPI_BUFFER_TEXT(obj->buffer), UACPI_BUFFER_SIZE(obj->buffer),
+            UACPI_BASE_AUTO, &dst
         );
         break;
     default:
@@ -2651,16 +2669,23 @@ static uacpi_status integer_to_string(
     // 0x prefix + repr + \0
     final_size = (is_hex ? 2 : 0) + repr_len + 1;
 
-    str->data = uacpi_kernel_alloc(final_size);
-    if (uacpi_unlikely(str->data == UACPI_NULL))
-        return UACPI_STATUS_OUT_OF_MEMORY;
+    if (uacpi_likely(final_size <= UACPI_INLINE_DATA_MAX_SIZE)) {
+        str->inline_data.size = final_size;
+        str->inline_data.is_inline = UACPI_TRUE;
+    } else {
+        str->data.data = uacpi_kernel_alloc(final_size);
+        if (uacpi_unlikely(str->data.data == UACPI_NULL))
+            return UACPI_STATUS_OUT_OF_MEMORY;
 
-    if (is_hex) {
-        str->text[0] = '0';
-        str->text[1] = 'x';
+        str->data.size = final_size;
     }
-    uacpi_memcpy(str->text + (is_hex ? 2 : 0), int_buf, repr_len + 1);
-    str->size = final_size;
+
+    uacpi_char *text = UACPI_BUFFER_TEXT(str);
+    if (is_hex) {
+        text[0] = '0';
+        text[1] = 'x';
+    }
+    uacpi_memcpy(text + (is_hex ? 2 : 0), int_buf, repr_len + 1);
 
     return UACPI_STATUS_OK;
 }
@@ -2674,13 +2699,16 @@ static uacpi_status buffer_to_string(
     uacpi_size i, final_size;
     uacpi_char *cursor;
 
+    uacpi_size buf_size = UACPI_BUFFER_SIZE(buf);
+    uacpi_u8 *buf_data = UACPI_BUFFER_DATA(buf);
+
     if (is_hex) {
-        final_size = 4 * buf->size;
+        final_size = 4 * buf_size;
     } else {
         final_size = 0;
 
-        for (i = 0; i < buf->size; ++i) {
-            uacpi_u8 value = ((uacpi_u8*)buf->data)[i];
+        for (i = 0; i < buf_size; ++i) {
+            uacpi_u8 value = buf_data[i];
 
             if (value < 10)
                 final_size += 1;
@@ -2692,50 +2720,54 @@ static uacpi_status buffer_to_string(
     }
 
     // Comma for every value but one
-    final_size += buf->size - 1;
+    final_size += buf_size - 1;
 
     // Null terminator
     final_size += 1;
 
-    str->data = uacpi_kernel_alloc(final_size);
-    if (uacpi_unlikely(str->data == UACPI_NULL))
-        return UACPI_STATUS_OUT_OF_MEMORY;
+    if (uacpi_likely(final_size <= UACPI_INLINE_DATA_MAX_SIZE)) {
+        str->inline_data.size = final_size;
+        str->inline_data.is_inline = UACPI_TRUE;
+    } else {
+        str->data.data = uacpi_kernel_alloc(final_size);
+        if (uacpi_unlikely(str->data.data == UACPI_NULL))
+            return UACPI_STATUS_OUT_OF_MEMORY;
 
-    cursor = str->data;
+        str->data.size = final_size;
+    }
 
-    for (i = 0; i < buf->size; ++i) {
+    cursor = UACPI_BUFFER_TEXT(str);
+
+    for (i = 0; i < buf_size; ++i) {
         repr_len = uacpi_snprintf(
             int_buf, sizeof(int_buf),
             is_hex ? "0x%02X" : "%d",
-            ((uacpi_u8*)buf->data)[i]
+            buf_data[i]
         );
         if (uacpi_unlikely(repr_len < 0)) {
-            uacpi_free(str->data, final_size);
-            str->data = UACPI_NULL;
+            if (!UACPI_BUFFER_IS_INLINE(str)) {
+                uacpi_free(str->data.data, final_size);
+                str->data.data = UACPI_NULL;
+            }
+
             return UACPI_STATUS_INVALID_ARGUMENT;
         }
 
         uacpi_memcpy(cursor, int_buf, repr_len + 1);
         cursor += repr_len;
 
-        if (i != buf->size - 1)
+        if (i != buf_size - 1)
             *cursor++ = ',';
     }
 
-    str->size = final_size;
     return UACPI_STATUS_OK;
 }
 
 static uacpi_status do_make_empty_object(uacpi_buffer *buf,
                                          uacpi_bool is_string)
 {
-    buf->text = uacpi_kernel_alloc_zeroed(sizeof(uacpi_char));
-    if (uacpi_unlikely(buf->text == UACPI_NULL))
-        return UACPI_STATUS_OUT_OF_MEMORY;
-
-    if (is_string)
-        buf->size = sizeof(uacpi_char);
-
+    buf->inline_data.size = is_string ? sizeof(uacpi_char) : 0;
+    buf->inline_data.is_inline = UACPI_TRUE;
     return UACPI_STATUS_OK;
 }
 
@@ -2777,7 +2809,7 @@ static uacpi_status handle_to(struct execution_context *ctx)
             ret = integer_to_string(src->integer, dst->buffer, is_hex);
             break;
         } else if (src->type == UACPI_OBJECT_BUFFER) {
-            if (uacpi_unlikely(src->buffer->size == 0))
+            if (uacpi_unlikely(UACPI_BUFFER_SIZE(src->buffer) == 0))
                 return make_null_string(dst->buffer);
 
             ret = buffer_to_string(src->buffer, dst->buffer, is_hex);
@@ -2787,7 +2819,6 @@ static uacpi_status handle_to(struct execution_context *ctx)
     }
     case UACPI_AML_OP_ToBufferOp: {
         struct object_storage_as_buffer buf;
-        uacpi_u8 *dst_buf;
 
         ret = get_object_storage(src, &buf, UACPI_TRUE);
         if (uacpi_unlikely_error(ret))
@@ -2796,13 +2827,23 @@ static uacpi_status handle_to(struct execution_context *ctx)
         if (uacpi_unlikely(buf.len == 0))
             return make_null_buffer(dst->buffer);
 
-        dst_buf = uacpi_kernel_alloc(buf.len);
-        if (uacpi_unlikely(dst_buf == UACPI_NULL))
-            return UACPI_STATUS_OUT_OF_MEMORY;
+        if (uacpi_likely(buf.len <= UACPI_INLINE_DATA_MAX_SIZE)) {
+            dst->buffer->inline_data.size = buf.len;
+            dst->buffer->inline_data.is_inline = UACPI_TRUE;
 
-        uacpi_memcpy(dst_buf, buf.ptr, buf.len);
-        dst->buffer->data = dst_buf;
-        dst->buffer->size = buf.len;
+            uacpi_memcpy(UACPI_BUFFER_DATA(dst->buffer), buf.ptr, buf.len);
+        } else {
+            uacpi_u8 *dst_buf;
+
+            dst_buf = uacpi_kernel_alloc(buf.len);
+            if (uacpi_unlikely(dst_buf == UACPI_NULL))
+                return UACPI_STATUS_OUT_OF_MEMORY;
+
+            uacpi_memcpy(dst_buf, buf.ptr, buf.len);
+            dst->buffer->data.data = dst_buf;
+            dst->buffer->data.size = buf.len;
+        }
+
         break;
     }
 
@@ -2823,19 +2864,26 @@ static uacpi_status handle_to_string(struct execution_context *ctx)
     req_len = item_array_at(&op_ctx->items, 1)->obj->integer;
     dst_buf = item_array_at(&op_ctx->items, 3)->obj->buffer;
 
-    len = UACPI_MIN(req_len, src_buf->size);
+    len = UACPI_MIN(req_len, UACPI_BUFFER_SIZE(src_buf));
     if (uacpi_unlikely(len == 0))
         return make_null_string(dst_buf);
 
-    len = uacpi_strnlen(src_buf->text, len);
+    len = uacpi_strnlen(UACPI_BUFFER_TEXT(src_buf), len);
 
-    dst_buf->text = uacpi_kernel_alloc(len + 1);
-    if (uacpi_unlikely(dst_buf->text == UACPI_NULL))
-        return UACPI_STATUS_OUT_OF_MEMORY;
+    if (uacpi_likely(len + 1 <= UACPI_INLINE_DATA_MAX_SIZE)) {
+        dst_buf->inline_data.size = len + 1;
+        dst_buf->inline_data.is_inline = UACPI_TRUE;
+    } else {
+        dst_buf->data.text = uacpi_kernel_alloc(len + 1);
+        if (uacpi_unlikely(dst_buf->data.text == UACPI_NULL))
+            return UACPI_STATUS_OUT_OF_MEMORY;
 
-    uacpi_memcpy(dst_buf->text, src_buf->data, len);
-    dst_buf->text[len] = '\0';
-    dst_buf->size = len + 1;
+        dst_buf->data.size = len + 1;
+    }
+
+    uacpi_char *dst_text = UACPI_BUFFER_TEXT(dst_buf);
+    uacpi_memcpy(dst_text, UACPI_BUFFER_TEXT(src_buf), len);
+    dst_text[len] = '\0';
 
     return UACPI_STATUS_OK;
 }
@@ -2879,15 +2927,23 @@ static uacpi_status handle_mid(struct execution_context *ctx)
     // Guaranteed to be at least 1 here
     len = UACPI_MIN(len, src_buf.len - idx);
 
-    dst_buf->data = uacpi_kernel_alloc(len + is_string);
-    if (uacpi_unlikely(dst_buf->data == UACPI_NULL))
-        return UACPI_STATUS_OUT_OF_MEMORY;
+    uacpi_size new_size = len + is_string;
+    if (uacpi_likely(new_size <= UACPI_INLINE_DATA_MAX_SIZE)) {
+        dst_buf->inline_data.size = new_size;
+        dst_buf->inline_data.is_inline = UACPI_TRUE;
+    } else {
+        dst_buf->data.data = uacpi_kernel_alloc(new_size);
+        if (uacpi_unlikely(dst_buf->data.data == UACPI_NULL))
+            return UACPI_STATUS_OUT_OF_MEMORY;
 
-    uacpi_memcpy(dst_buf->data, (uacpi_u8*)src_buf.ptr + idx, len);
-    dst_buf->size = len;
+        dst_buf->data.size = new_size;
+    }
 
+    uacpi_char *dst_text = UACPI_BUFFER_TEXT(dst_buf);
+
+    uacpi_memcpy(dst_text, src_buf.ptr + idx, len);
     if (is_string) {
-        dst_buf->text[dst_buf->size++] = '\0';
+        dst_text[len] = '\0';
         dst->type = UACPI_OBJECT_STRING;
     }
 
@@ -2899,8 +2955,8 @@ static uacpi_status handle_concatenate(struct execution_context *ctx)
     uacpi_status ret = UACPI_STATUS_OK;
     struct op_context *op_ctx = ctx->cur_op_ctx;
     uacpi_object *arg0, *arg1, *dst;
-    uacpi_u8 *dst_buf;
-    uacpi_size buf_size = 0;
+    // uacpi_u8 *dst_buf;
+    // uacpi_size buf_size = 0;
 
     arg0 = item_array_at(&op_ctx->items, 0)->obj;
     arg1 = item_array_at(&op_ctx->items, 1)->obj;
@@ -2909,41 +2965,62 @@ static uacpi_status handle_concatenate(struct execution_context *ctx)
     switch (arg0->type) {
     case UACPI_OBJECT_INTEGER: {
         uacpi_u64 arg1_as_int;
-        uacpi_size int_size;
+        uacpi_size int_size, buf_size;
+        uacpi_u8 *dst_buf;
 
         int_size = sizeof_int();
         buf_size = int_size * 2;
 
-        dst_buf = uacpi_kernel_alloc(buf_size);
-        if (uacpi_unlikely(dst_buf == UACPI_NULL))
-            return UACPI_STATUS_OUT_OF_MEMORY;
+        if (buf_size <= UACPI_INLINE_DATA_MAX_SIZE) {
+            dst->buffer->inline_data.size = buf_size;
+            dst->buffer->inline_data.is_inline = UACPI_TRUE;
+        } else {
+            dst->buffer->data.data = uacpi_kernel_alloc(buf_size);
+            if (uacpi_unlikely(dst->buffer->data.data == UACPI_NULL))
+                return UACPI_STATUS_OUT_OF_MEMORY;
 
+            dst->buffer->data.size = buf_size;
+        }
+
+        dst_buf = UACPI_BUFFER_DATA(dst->buffer);
         arg1_as_int = object_to_integer(arg1, 8);
 
         uacpi_memcpy(dst_buf, &arg0->integer, int_size);
-        uacpi_memcpy(dst_buf+ int_size, &arg1_as_int, int_size);
+        uacpi_memcpy(dst_buf + int_size, &arg1_as_int, int_size);
         break;
     }
     case UACPI_OBJECT_BUFFER: {
         uacpi_buffer *arg0_buf = arg0->buffer;
+        uacpi_size arg0_size = UACPI_BUFFER_SIZE(arg0_buf), buf_size;
+        uacpi_u8 *dst_buf;
         struct object_storage_as_buffer arg1_buf;
 
         get_object_storage(arg1, &arg1_buf, UACPI_TRUE);
-        buf_size = arg0_buf->size + arg1_buf.len;
+        buf_size = arg0_size + arg1_buf.len;
 
-        dst_buf = uacpi_kernel_alloc(buf_size);
-        if (uacpi_unlikely(dst_buf == UACPI_NULL))
-            return UACPI_STATUS_OUT_OF_MEMORY;
+        if (buf_size <= UACPI_INLINE_DATA_MAX_SIZE) {
+            dst->buffer->inline_data.size = buf_size;
+            dst->buffer->inline_data.is_inline = UACPI_TRUE;
+        } else {
+            dst->buffer->data.data = uacpi_kernel_alloc(buf_size);
+            if (uacpi_unlikely(dst->buffer->data.data == UACPI_NULL))
+                return UACPI_STATUS_OUT_OF_MEMORY;
 
-        uacpi_memcpy(dst_buf, arg0_buf->data, arg0_buf->size);
-        uacpi_memcpy(dst_buf + arg0_buf->size, arg1_buf.ptr, arg1_buf.len);
+            dst->buffer->data.size = buf_size;
+        }
+
+        dst_buf = UACPI_BUFFER_DATA(dst->buffer);
+
+        uacpi_memcpy(dst_buf, UACPI_BUFFER_DATA(arg0_buf), arg0_size);
+        uacpi_memcpy(dst_buf + arg0_size, arg1_buf.ptr, arg1_buf.len);
         break;
     }
     case UACPI_OBJECT_STRING: {
         uacpi_char int_buf[17];
         void *arg1_ptr;
-        uacpi_size arg0_size, arg1_size;
+        uacpi_size arg0_size, arg1_size, buf_size;
         uacpi_buffer *arg0_buf = arg0->buffer;
+        uacpi_u8 *dst_buf;
 
         switch (arg1->type) {
         case UACPI_OBJECT_INTEGER: {
@@ -2958,8 +3035,8 @@ static uacpi_status handle_concatenate(struct execution_context *ctx)
             break;
         }
         case UACPI_OBJECT_STRING:
-            arg1_ptr = arg1->buffer->data;
-            arg1_size = arg1->buffer->size;
+            arg1_ptr = UACPI_BUFFER_DATA(arg1->buffer);
+            arg1_size = UACPI_BUFFER_SIZE(arg1->buffer);
             break;
         case UACPI_OBJECT_BUFFER: {
             uacpi_buffer tmp_buf;
@@ -2968,28 +3045,34 @@ static uacpi_status handle_concatenate(struct execution_context *ctx)
             if (uacpi_unlikely_error(ret))
                 return ret;
 
-            arg1_ptr = tmp_buf.data;
-            arg1_size = tmp_buf.size;
+            arg1_ptr = UACPI_BUFFER_DATA(&tmp_buf);
+            arg1_size = UACPI_BUFFER_SIZE(&tmp_buf);
             break;
         }
         default:
             return UACPI_STATUS_INVALID_ARGUMENT;
         }
 
-        arg0_size = arg0_buf->size ? arg0_buf->size - 1 : arg0_buf->size;
+        arg0_size = UACPI_BUFFER_SIZE(arg0_buf) ? UACPI_BUFFER_SIZE(arg0_buf) - 1 : 0;
         buf_size = arg0_size + arg1_size;
 
-        dst_buf = uacpi_kernel_alloc(buf_size);
-        if (uacpi_unlikely(dst_buf == UACPI_NULL)) {
-            ret = UACPI_STATUS_OUT_OF_MEMORY;
-            goto cleanup;
+        if (uacpi_likely(buf_size <= UACPI_INLINE_DATA_MAX_SIZE)) {
+            dst->buffer->inline_data.size = buf_size;
+            dst->buffer->inline_data.is_inline = UACPI_TRUE;
+        } else {
+            dst->buffer->data.data = uacpi_kernel_alloc(buf_size);
+            if (uacpi_unlikely(dst->buffer->data.data == UACPI_NULL))
+                return UACPI_STATUS_OUT_OF_MEMORY;
+
+            dst->buffer->data.size = buf_size;
         }
 
-        uacpi_memcpy(dst_buf, arg0_buf->data, arg0_size);
+        dst_buf = UACPI_BUFFER_DATA(dst->buffer);
+
+        uacpi_memcpy(dst_buf, UACPI_BUFFER_DATA(arg0_buf), arg0_size);
         uacpi_memcpy(dst_buf + arg0_size, arg1_ptr, arg1_size);
         dst->type = UACPI_OBJECT_STRING;
 
-    cleanup:
         if (arg1->type == UACPI_OBJECT_BUFFER)
             uacpi_free(arg1_ptr, arg1_size);
         break;
@@ -2998,10 +3081,6 @@ static uacpi_status handle_concatenate(struct execution_context *ctx)
         return UACPI_STATUS_INVALID_ARGUMENT;
     }
 
-    if (uacpi_likely_success(ret)) {
-        dst->buffer->data = dst_buf;
-        dst->buffer->size = buf_size;
-    }
     return ret;
 }
 
@@ -3027,15 +3106,21 @@ static uacpi_status handle_concatenate_res(struct execution_context *ctx)
 
     dst_size = arg0_size + arg1_size + sizeof(struct acpi_resource_end_tag);
 
-    dst_buf = uacpi_kernel_alloc(dst_size);
-    if (uacpi_unlikely(dst_buf == UACPI_NULL))
-        return UACPI_STATUS_OUT_OF_MEMORY;
+    if (dst_size <= UACPI_INLINE_DATA_MAX_SIZE) {
+        dst->buffer->inline_data.size = dst_size;
+        dst->buffer->inline_data.is_inline = UACPI_TRUE;
+    } else {
+        dst->buffer->data.data = uacpi_kernel_alloc(dst_size);
+        if (uacpi_unlikely(dst->buffer->data.data == UACPI_NULL))
+            return UACPI_STATUS_OUT_OF_MEMORY;
 
-    dst->buffer->data = dst_buf;
-    dst->buffer->size = dst_size;
+        dst->buffer->data.size = dst_size;
+    }
 
-    uacpi_memcpy(dst_buf, arg0->buffer->data, arg0_size);
-    uacpi_memcpy(dst_buf + arg0_size, arg1->buffer->data, arg1_size);
+    dst_buf = UACPI_BUFFER_DATA(dst->buffer);
+
+    uacpi_memcpy(dst_buf, UACPI_BUFFER_DATA(arg0->buffer), arg0_size);
+    uacpi_memcpy(dst_buf + arg0_size, UACPI_BUFFER_DATA(arg1->buffer), arg1_size);
 
     /*
      * Small item (0), End Tag (0x0F), length 1
@@ -3199,13 +3284,16 @@ static uacpi_bool handle_logical_equality(uacpi_object *lhs, uacpi_object *rhs)
     uacpi_bool res = UACPI_FALSE;
 
     if (lhs->type == UACPI_OBJECT_STRING || lhs->type == UACPI_OBJECT_BUFFER) {
-        res = lhs->buffer->size == rhs->buffer->size;
+        uacpi_size lhs_size = UACPI_BUFFER_SIZE(lhs->buffer);
+        uacpi_size rhs_size = UACPI_BUFFER_SIZE(rhs->buffer);
 
-        if (res && lhs->buffer->size) {
+        res = lhs_size == rhs_size;
+
+        if (res && lhs_size) {
             res = uacpi_memcmp(
-                lhs->buffer->data,
-                rhs->buffer->data,
-                lhs->buffer->size
+                UACPI_BUFFER_DATA(lhs->buffer),
+                UACPI_BUFFER_DATA(rhs->buffer),
+                lhs_size
             ) == 0;
         }
     } else if (lhs->type == UACPI_OBJECT_INTEGER) {
@@ -3221,17 +3309,18 @@ static uacpi_bool handle_logical_less_or_greater(
 {
     if (lhs->type == UACPI_OBJECT_STRING || lhs->type == UACPI_OBJECT_BUFFER) {
         int res;
-        uacpi_buffer *lhs_buf, *rhs_buf;
+        uacpi_size lhs_size, rhs_size;
 
-        lhs_buf = lhs->buffer;
-        rhs_buf = rhs->buffer;
+        lhs_size = UACPI_BUFFER_SIZE(lhs->buffer);
+        rhs_size = UACPI_BUFFER_SIZE(rhs->buffer);
 
-        res = uacpi_memcmp(lhs_buf->data, rhs_buf->data,
-                           UACPI_MIN(lhs_buf->size, rhs_buf->size));
+        res = uacpi_memcmp(UACPI_BUFFER_DATA(lhs->buffer),
+                           UACPI_BUFFER_DATA(rhs->buffer),
+                           UACPI_MIN(lhs_size, rhs_size));
         if (res == 0) {
-            if (lhs_buf->size < rhs_buf->size)
+            if (lhs_size < rhs_size)
                 res = -1;
-            else if (lhs_buf->size > rhs_buf->size)
+            else if (lhs_size > rhs_size)
                 res = 1;
         }
 
@@ -3790,12 +3879,19 @@ static uacpi_status handle_field_read(struct execution_context *ctx)
         buf = dst_obj->buffer;
         dst_size = field_byte_size(src_obj);
 
-        dst = uacpi_kernel_alloc_zeroed(dst_size);
-        if (dst == UACPI_NULL)
-            return UACPI_STATUS_OUT_OF_MEMORY;
+        if (uacpi_likely(dst_size <= UACPI_INLINE_DATA_MAX_SIZE)) {
+            buf->inline_data.size = dst_size;
+            buf->inline_data.is_inline = UACPI_TRUE;
+            uacpi_memzero(buf->inline_data.data, dst_size);
+        } else {
+            buf->data.data = uacpi_kernel_alloc_zeroed(dst_size);
+            if (buf->data.data == UACPI_NULL)
+                return UACPI_STATUS_OUT_OF_MEMORY;
 
-        buf->data = dst;
-        buf->size = dst_size;
+            buf->data.size = dst_size;
+        }
+
+        dst = UACPI_BUFFER_DATA(buf);
     } else {
         dst = &dst_obj->integer;
         dst_size = sizeof(uacpi_u64);
@@ -3880,11 +3976,11 @@ static uacpi_status handle_create_buffer_field(struct execution_context *ctx)
     }
 
     if (uacpi_unlikely((field->bit_index + field->bit_length) >
-                       src_buf->size * 8)) {
+                       UACPI_BUFFER_SIZE(src_buf) * 8)) {
         uacpi_error(
             "invalid buffer field: bits [%zu..%zu], buffer size is %zu bytes\n",
             field->bit_index, field->bit_index + field->bit_length,
-            src_buf->size
+            UACPI_BUFFER_SIZE(src_buf)
         );
         return UACPI_STATUS_AML_OUT_OF_BOUNDS_INDEX;
     }
@@ -5810,13 +5906,13 @@ uacpi_status uacpi_osi(uacpi_handle handle, uacpi_object *retval)
 
     retval->type = UACPI_OBJECT_INTEGER;
 
-    ret = uacpi_handle_osi(arg->buffer->text, &is_supported);
+    ret = uacpi_handle_osi(UACPI_BUFFER_TEXT(arg->buffer), &is_supported);
     if (uacpi_unlikely_error(ret))
         return ret;
 
     retval->integer = is_supported ? ones() : 0;
 
     uacpi_trace("_OSI(%s) => reporting as %ssupported\n",
-                arg->buffer->text, is_supported ? "" : "un");
+                UACPI_BUFFER_TEXT(arg->buffer), is_supported ? "" : "un");
     return UACPI_STATUS_OK;
 }

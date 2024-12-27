@@ -19,14 +19,37 @@ enum uacpi_string_kind {
     UACPI_STRING_KIND_PATH,
 };
 
+#define UACPI_INLINE_DATA_MAX_SIZE sizeof(void *) + sizeof(uacpi_size) - sizeof(uacpi_u8)
+#define UACPI_BUFFER_IS_INLINE(buffer) ((buffer)->inline_data.is_inline)
+#define UACPI_BUFFER_DATA(buffer) (UACPI_BUFFER_IS_INLINE(buffer) ? \
+    (buffer)->inline_data.data : (buffer)->data.data)
+#define UACPI_BUFFER_BYTE_DATA(buffer) (UACPI_BUFFER_IS_INLINE(buffer) ? \
+    (buffer)->inline_data.data : (buffer)->data.byte_data)
+#define UACPI_BUFFER_TEXT(buffer) (UACPI_BUFFER_IS_INLINE(buffer) ? \
+    (buffer)->inline_data.char_data : (buffer)->data.text)
+#define UACPI_BUFFER_SIZE(buffer) (UACPI_BUFFER_IS_INLINE(buffer) ? \
+    (buffer)->inline_data.size : (buffer)->data.size)
+
 typedef struct uacpi_buffer {
     struct uacpi_shareable shareable;
     union {
-        void *data;
-        uacpi_u8 *byte_data;
-        uacpi_char *text;
+        struct {
+            union {
+                void *data;
+                uacpi_u8 *byte_data;
+                uacpi_char *text;
+            };
+            uacpi_size size;
+        } data;
+        struct {
+            union {
+                uacpi_u8 data[UACPI_INLINE_DATA_MAX_SIZE];
+                uacpi_char char_data[UACPI_INLINE_DATA_MAX_SIZE];
+            };
+            uacpi_u8 size : 7;
+            uacpi_bool is_inline : 1;
+        } inline_data;
     };
-    uacpi_size size;
 } uacpi_buffer;
 
 typedef struct uacpi_package {

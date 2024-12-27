@@ -386,12 +386,13 @@ uacpi_status uacpi_eval_hid(uacpi_namespace_node *node, uacpi_id_string **out_id
     switch (hid_ret->type) {
     case UACPI_OBJECT_STRING: {
         uacpi_buffer *buf = hid_ret->buffer;
+        uacpi_size buf_size = UACPI_BUFFER_SIZE(buf);
 
-        size += buf->size;
-        if (uacpi_unlikely(buf->size == 0 || size < buf->size)) {
+        size += buf_size;
+        if (uacpi_unlikely(buf_size == 0 || size < buf_size)) {
             uacpi_error(
                 "%.4s._HID: empty/invalid EISA ID string (%zu bytes)\n",
-                uacpi_namespace_node_name(node).text, buf->size
+                uacpi_namespace_node_name(node).text, buf_size
             );
             ret = UACPI_STATUS_AML_BAD_ENCODING;
             break;
@@ -402,11 +403,11 @@ uacpi_status uacpi_eval_hid(uacpi_namespace_node *node, uacpi_id_string **out_id
             ret = UACPI_STATUS_OUT_OF_MEMORY;
             break;
         }
-        id->size = buf->size;
+        id->size = buf_size;
         id->value = UACPI_PTR_ADD(id, sizeof(uacpi_id_string));
 
-        uacpi_memcpy(id->value, buf->text, buf->size);
-        id->value[buf->size - 1] = '\0';
+        uacpi_memcpy(id->value, UACPI_BUFFER_TEXT(buf), buf_size);
+        id->value[buf_size - 1] = '\0';
         break;
     }
 
@@ -480,7 +481,7 @@ uacpi_status uacpi_eval_cid(
 
         switch (object->type) {
         case UACPI_OBJECT_STRING: {
-            uacpi_size buf_size = object->buffer->size;
+            uacpi_size buf_size = UACPI_BUFFER_SIZE(object->buffer);
 
             if (uacpi_unlikely(buf_size == 0)) {
                 uacpi_error(
@@ -532,10 +533,10 @@ uacpi_status uacpi_eval_cid(
         case UACPI_OBJECT_STRING: {
             uacpi_buffer *buf = object->buffer;
 
-            id->size = buf->size;
+            id->size = UACPI_BUFFER_SIZE(buf);
             id->value = id_buffer;
 
-            uacpi_memcpy(id->value, buf->text, id->size);
+            uacpi_memcpy(id->value, UACPI_BUFFER_TEXT(buf), id->size);
             id->value[id->size - 1] = '\0';
             break;
         }
@@ -668,7 +669,7 @@ uacpi_status uacpi_eval_uid(
         return ret;
 
     if (obj->type == UACPI_OBJECT_STRING) {
-        size = obj->buffer->size;
+        size = UACPI_BUFFER_SIZE(obj->buffer);
         if (uacpi_unlikely(size == 0 || size > 0xE0000000)) {
             uacpi_error(
                 "invalid %.4s._UID string size: %u\n",
@@ -693,7 +694,7 @@ uacpi_status uacpi_eval_uid(
     id_string->size = size;
 
     if (obj->type == UACPI_OBJECT_STRING) {
-        uacpi_memcpy(id_string->value, obj->buffer->text, size);
+        uacpi_memcpy(id_string->value, UACPI_BUFFER_TEXT(obj->buffer), size);
         id_string->value[size - 1] = '\0';
     } else {
         uacpi_snprintf(
@@ -1086,7 +1087,8 @@ uacpi_status uacpi_get_pci_routing_table(
             );
             if (uacpi_unlikely_error(ret)) {
                 uacpi_error("unable to lookup _PRT source %s: %s\n",
-                            elem_obj->buffer->text, uacpi_status_to_string(ret));
+                            UACPI_BUFFER_TEXT(elem_obj->buffer),
+                            uacpi_status_to_string(ret));
                 goto out_bad_encoding;
             }
             break;

@@ -1424,8 +1424,8 @@ uacpi_status uacpi_for_each_aml_resource(
     enum uacpi_aml_resource type;
     const struct uacpi_resource_spec *spec;
 
-    bytes_left = buffer->size;
-    data = buffer->data;
+    bytes_left = UACPI_BUFFER_SIZE(buffer);
+    data = UACPI_BUFFER_DATA(buffer);
 
     while (bytes_left) {
         type = get_aml_resource_type(*data);
@@ -1522,7 +1522,7 @@ uacpi_status uacpi_find_aml_resource_end_tag(
     uacpi_u8 *end_tag_ptr;
     uacpi_status ret;
 
-    if (!buffer || buffer->size == 0) {
+    if (!buffer || UACPI_BUFFER_SIZE(buffer) == 0) {
         *out_offset = 0;
         return UACPI_STATUS_OK;
     }
@@ -1536,7 +1536,7 @@ uacpi_status uacpi_find_aml_resource_end_tag(
     if (uacpi_unlikely_error(ret))
         return ret;
 
-    *out_offset = end_tag_ptr - buffer->byte_data;
+    *out_offset = end_tag_ptr - UACPI_BUFFER_BYTE_DATA(buffer);
     return UACPI_STATUS_OK;
 }
 
@@ -2433,7 +2433,6 @@ uacpi_status uacpi_native_resources_to_aml(
 {
     uacpi_status ret;
     uacpi_object *obj;
-    void *buffer;
     struct resource_conversion_ctx ctx = { 0 };
 
     ret = uacpi_for_each_resource(
@@ -2456,20 +2455,24 @@ uacpi_status uacpi_native_resources_to_aml(
         return UACPI_STATUS_INTERNAL_ERROR;
     }
 
-    buffer = uacpi_kernel_alloc_zeroed(ctx.size);
-    if (uacpi_unlikely(buffer == UACPI_NULL))
+    obj = uacpi_create_object(UACPI_OBJECT_BUFFER);
+    if (uacpi_unlikely(obj == UACPI_NULL))
         return UACPI_STATUS_OUT_OF_MEMORY;
 
-    obj = uacpi_create_object(UACPI_OBJECT_BUFFER);
-    if (uacpi_unlikely(obj == UACPI_NULL)) {
-        uacpi_free(buffer, ctx.size);
-        return UACPI_STATUS_OUT_OF_MEMORY;
+    if (ctx.size <= UACPI_INLINE_DATA_MAX_SIZE) {
+        obj->buffer->inline_data.size = ctx.size;
+        obj->buffer->inline_data.is_inline = UACPI_TRUE;
+    } else {
+        obj->buffer->data.data = uacpi_kernel_alloc_zeroed(ctx.size);
+        if (uacpi_unlikely(obj->buffer->data.data == UACPI_NULL)) {
+            uacpi_object_unref(obj);
+            return UACPI_STATUS_OUT_OF_MEMORY;
+        }
+
+        obj->buffer->data.size = ctx.size;
     }
 
-    obj->buffer->data = buffer;
-    obj->buffer->size = ctx.size;
-
-    ret = native_resources_to_aml(resources, buffer);
+    ret = native_resources_to_aml(resources, UACPI_BUFFER_DATA(obj->buffer));
     if (uacpi_unlikely_error(ret))
         uacpi_object_unref(obj);
 

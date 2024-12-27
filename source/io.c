@@ -99,7 +99,7 @@ static void do_misaligned_buffer_read(
     struct bit_span src_span = {
         .index = field->bit_index,
         .length = field->bit_length,
-        .const_data = field->backing->data,
+        .const_data = UACPI_BUFFER_DATA(field->backing),
     };
     struct bit_span dst_span = {
         .data = dst,
@@ -114,7 +114,7 @@ void uacpi_read_buffer_field(
 )
 {
     if (!(field->bit_index & 7)) {
-        uacpi_u8 *src = field->backing->data;
+        uacpi_u8 *src = UACPI_BUFFER_DATA(field->backing);
         uacpi_size count;
 
         count = uacpi_round_up_bits_to_bytes(field->bit_length);
@@ -138,7 +138,7 @@ static void do_write_misaligned_buffer_field(
     struct bit_span dst_span = {
         .index = field->bit_index,
         .length = field->bit_length,
-        .data = field->backing->data,
+        .data = UACPI_BUFFER_DATA(field->backing),
     };
 
     bit_copy(&dst_span, &src_span);
@@ -153,7 +153,7 @@ void uacpi_write_buffer_field(
         uacpi_u8 *dst, last_byte, tail_shift;
         uacpi_size count;
 
-        dst = field->backing->data;
+        dst = UACPI_BUFFER_DATA(field->backing);
         dst += field->bit_index / 8;
         count = uacpi_round_up_bits_to_bytes(field->bit_length);
 

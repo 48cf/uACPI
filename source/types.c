@@ -100,14 +100,17 @@ static uacpi_bool buffer_alloc(uacpi_object *obj, uacpi_size initial_size)
 
     uacpi_shareable_init(buf);
 
-    if (initial_size) {
-        buf->data = uacpi_kernel_alloc(initial_size);
-        if (uacpi_unlikely(buf->data == UACPI_NULL)) {
+    if (uacpi_likely(initial_size <= UACPI_INLINE_DATA_MAX_SIZE)) {
+        buf->inline_data.size = initial_size;
+        buf->inline_data.is_inline = UACPI_TRUE;
+    } else {
+        buf->data.data = uacpi_kernel_alloc(initial_size);
+        if (uacpi_unlikely(buf->data.data == UACPI_NULL)) {
             uacpi_free(buf, sizeof(*buf));
             return UACPI_FALSE;
         }
 
-        buf->size = initial_size;
+        buf->data.size = initial_size;
     }
 
     obj->buffer = buf;
@@ -350,13 +353,13 @@ static void free_buffer(uacpi_handle handle)
 {
     uacpi_buffer *buf = handle;
 
-    if (buf->data != UACPI_NULL)
+    if (!UACPI_BUFFER_IS_INLINE(buf) && buf->data.data != UACPI_NULL)
         /*
          * If buffer has a size of 0 but a valid data pointer it's probably an
          * "empty" buffer allocated by the interpreter in make_null_buffer
          * and its real size is actually 1.
          */
-        uacpi_free(buf->data, UACPI_MAX(buf->size, 1));
+        uacpi_free(buf->data.data, UACPI_MAX(buf->data.size, 1));
 
     uacpi_free(buf, sizeof(*buf));
 }
@@ -771,7 +774,7 @@ static uacpi_status buffer_alloc_and_store(
     if (uacpi_unlikely(!buffer_alloc(obj, buf_size)))
         return UACPI_STATUS_OUT_OF_MEMORY;
 
-    uacpi_memcpy_zerout(obj->buffer->data, src, buf_size, src_size);
+    uacpi_memcpy_zerout(UACPI_BUFFER_DATA(obj->buffer), src, buf_size, src_size);
     return UACPI_STATUS_OK;
 }
 
@@ -784,8 +787,9 @@ static uacpi_status assign_buffer(uacpi_object *dst, uacpi_object *src,
         return UACPI_STATUS_OK;
     }
 
-    return buffer_alloc_and_store(dst, src->buffer->size,
-                                  src->buffer->data, src->buffer->size);
+    return buffer_alloc_and_store(dst, UACPI_BUFFER_SIZE(src->buffer),
+                                  UACPI_BUFFER_DATA(src->buffer),
+                                  UACPI_BUFFER_SIZE(src->buffer));
 }
 
 struct pkg_copy_req {
@@ -1024,8 +1028,8 @@ static uacpi_status uacpi_object_do_get_string_or_buffer(
 {
     TYPE_CHECK_USER_OBJ(obj, mask);
 
-    out->bytes = obj->buffer->data;
-    out->length = obj->buffer->size;
+    out->bytes = UACPI_BUFFER_DATA(obj->buffer);
+    out->length = UACPI_BUFFER_SIZE(obj->buffer);
     return UACPI_STATUS_OK;
 }
 
@@ -1070,7 +1074,7 @@ uacpi_status uacpi_object_resolve_as_aml_namepath(
         return UACPI_STATUS_INVALID_ARGUMENT;
 
     ret = uacpi_namespace_node_resolve_from_aml_namepath(
-        scope, obj->buffer->text, &node
+        scope, UACPI_BUFFER_TEXT(obj->buffer), &node
     );
     if (uacpi_likely_success(ret))
         *out_node = node;
